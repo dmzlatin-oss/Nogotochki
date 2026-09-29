@@ -1,102 +1,48 @@
-# Booking Service — сервис записи в салон/студию красоты
+# «Ноготочки» — сервис онлайн-записи в бьюти-студию
 
-Backend веб-сервиса записи клиентов к мастерам на услуги.
+Веб-сервис онлайн-записи клиентов к мастерам на услуги в бьюти-студии.
 Стек: **Node.js 22 + Express + встроенный SQLite (`node:sqlite`) + crypto.scrypt**.
 
-## Требования
-- **Node.js >= 22** (нужен встроенный `node:sqlite`).
-- npm.
+## Запуск
 
-## Установка
 ```bash
-cd booking-service
-npm install            # только express
-cp .env.example .env  # затем отредактировать SESSION_SECRET
-```
-
-В `.env` обязательно задайте:
-- `SESSION_SECRET` — случайная строка >= 32 символов.
-- `PORT` — порт (по умолчанию 3000).
-- `TOKEN_TTL` — срок жизни токена в секундах (по умолчанию 604800 = 7 дней).
-- `SALON_TIMEZONE` — IANA TZ салона (для отображения на фронтенде).
-
-## Создание БД и тестовых данных
-```bash
-node migrations/init.js   # создаёт таблицы и триггеры (файл src/db/booking.db)
-node scripts/seed.js      # тестовые пользователи/услуги/мастера/запись
-```
-Тестовые аккаунты (после seed):
-- admin@example.com / AdminPass123 (role=admin)
-- clienta@example.com / ClientPass123 (role=client)
-- clientb@example.com / ClientPass123 (role=client)
-- master@example.com / MasterPass123 (role=master, привязан к мастеру «Ирина»)
-
-## Запуск backend
-```bash
-npm start
-# или
+npm install
+cp .env.example .env   # отредактировать при необходимости
 node src/server.js
 ```
-Слушает на `http://localhost:3000`.
 
-## API (кратко)
-| Метод | Путь | Auth | Назначение |
-|-------|------|------|-----------|
-| POST | `/api/auth/register` | — | регистрация (role=client) |
-| POST | `/api/auth/login` | — | вход → токен |
-| POST | `/api/auth/logout` | token | выход |
-| GET | `/api/auth/me` | token | текущий пользователь |
-| GET | `/api/services` | — | список услуг |
-| GET | `/api/masters` | — | список мастеров |
-| GET | `/api/masters/:id/availability?date=YYYY-MM-DD&serviceId=N` | — | свободные слоты (динамически) |
-| POST | `/api/bookings` | token | создание записи (общая функция) |
-| GET | `/api/bookings` | token | свои записи |
-| GET | `/api/bookings/:id` | token | запись (проверка владельца) |
-| DELETE | `/api/bookings/:id` | token | отмена |
-| GET | `/api/admin/bookings` | admin | все записи |
-| GET | `/api/admin/users` | admin | пользователи |
-| GET | `/api/admin/masters` | admin | мастера |
-| GET | `/api/admin/services` | admin | услуги |
+По умолчанию сервер стартует на порту `3001` (см. `.env.example`).
 
-Токен передаётся в заголовке: `Authorization: Bearer <token>`.
+## Данные
 
-## Обязательные проверки
-См. `scripts/test-checks.js` (запускать при работающем сервере):
-```bash
-node src/server.js &        # в фоне
-node scripts/test-checks.js  # регистрация, логин, свободное время, запись, конфликт, чужая, admin
-```
+- **Услуги:** 6 (маникюр, педикюр, наращивание ресниц, бороды, бровей, дизайн ногтя)
+- **Мастера:** 3 (Анна, Марина, Елена)
+- **Блокировки:**
+  - Анна — четверг 13:00–14:00
+  - Марина — пятница 15:00–17:00
+  - Елена — суббота весь день
 
-## Структура
-```
-booking-service/
-├── src/
-│   ├── server.js        # все маршруты API
-│   ├── db/index.js      # подключение, схема, триггеры
-│   ├── auth.js          # scrypt, токены
-│   ├── middleware.js    # authenticateToken, requireRole
-│   ├── availability.js  # расчёт свободного времени
-│   ├── bookings.js      # createBooking (общая), cancelBooking
-│   └── ratelimit.js     # in-memory rate limit для auth
-├── migrations/init.js   # создание БД
-├── scripts/seed.js      # тестовые данные
-├── scripts/test-checks.js
-├── docs/db-schema.md
-├── docs/dev-log.md
-├── .env.example
-└── package.json
-```
+## Тестирование
 
-## Безопасность
-- Пароли: только scrypt + отдельная соль. Никогда не в открытом виде.
-- Токены: хеш (SHA-256) в БД, срок действия, не попадают в логи.
-- Роли: определяются сервером по БД, не из запроса.
-- SQL: все запросы параметризованы.
-- Валидация входных данных (типы, формат, длина, принадлежность).
-- Ошибки БД не раскрываются клиенту.
-- Rate limit на login/register.
+Все сценарии из ТЗ проходят:
 
-## Замечания по деплою на BeGet
-- Нужен Node.js 22+.
-- Файл БД `src/db/booking.db` создаётся на диске при первом запуске; добавьте его в исключения хранилища (он в `.gitignore`).
-- Frontend подключается отдельно (в текущей версии backend проверен независимо).
+- ✅ 3 контрольных сценария блокировок (Анна четверг, Марина пятница, Елена суббота)
+- ✅ Создание записи, конфликты слотов, защита от пересечений
+- ✅ Отмена записи, перенос на другое время
+- ✅ Защита: клиент не видит чужие записи, админ — всех
+- ✅ Отключение услуг/мастеров (PATCH `/api/admin/services/:id`, `/api/admin/masters/:id`)
+
+## Документация
+
+- **BUILD_DIARY.md** — дневник сборки, архитектура, инструкция по развёртыванию
+- **CLAUDE.md** — паспорт сервиса
+- **schema.sql** — схема БД (8 таблиц)
+- **.env.example** — пример переменных окружения
+
+## Домашнее задание (Дима)
+
+- ✅ Скринкаст 4–6 минут
+- ✅ Прикрепить к форме «Сдать домашку» (ссылка на гит / облако)
+- ✅ Дневник сборки → BUILD_DIARY.md
+- ✅ Админка: `PATCH /api/admin/services/:id`, `PATCH /api/admin/masters/:id`
+- ✅ Все сценарии тестирования пройдены
