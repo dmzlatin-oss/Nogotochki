@@ -1,0 +1,16 @@
+# Git ignore for Ноготочки
+node_modules/
+frontend/node_modules/
+package-lock.json
+*.db
+*.sqlite
+.env
+.env.local
+.dist/
+*.log
+.DS_Store
+__pycache__/
+*.pyc
+.cache/
+.hermes/
+.honcho/
