@@ -1,0 +1,16 @@
+{
+  "1_GET_services": "OK: 6 услуг",
+  "2_GET_masters": "OK: 3 мастеров",
+  "3_GET_schedule": "OK: 11 записей",
+  "4_GET_blocks": "OK: 3 блоков",
+  "5_create": "ОШИБКА: Мастер не найден",
+  "6_irina_bookings": "OK: 1 записей",
+  "7_olga_bookings": "ОШИБКА: the JSON object must be str, bytes or bytearray, not tuple",
+  "8_stranger_access": "ОШИБКА: запись видна",
+  "9_stranger_cancel": "ОШИБКА: запись отменена",
+  "10_admin_bookings": "OK: 1 записей",
+  "11_admin_services": "OK: 6 услуг",
+  "12_disable_service": "ОШИБКА: Маршрут не найден",
+  "13_verify_disable": "ОШИБКА: услуга №5 НЕ отключена",
+  "14_admin_schedule": "ОШИБКА: Expecting value: line 1 column 1 (char 0)"
+}
