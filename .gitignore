@@ -14,3 +14,8 @@ __pycache__/
 .cache/
 .hermes/
 .honcho/
+
+# SQLite WAL/SHM - auto-generated, should not be committed
+*.db-shm
+*.db-wal
+*.db
