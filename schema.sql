@@ -1,3 +1,8 @@
+-- Схема БД «Ноготочки» (SQLite).
+-- Сгенерировано из рабочей базы: sqlite3 src/db/booking.db .schema
+-- Время: в start_time/end_time хранится честный UTC (суффикс Z),
+-- салонское время = MSK (UTC+3), см. src/time.js.
+
 CREATE TABLE users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
