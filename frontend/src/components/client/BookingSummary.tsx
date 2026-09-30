@@ -57,7 +57,7 @@ export default function BookingSummary({
 
       <div className="mt-3 flex items-center gap-1.5 text-xs text-stone-400">
         <MapPin className="h-3.5 w-3.5" />
-        <span>ул. Тверская, 12 · время местное</span>
+        <span>ул. Тверская, 12 · время московское (МСК)</span>
       </div>
     </div>
   );

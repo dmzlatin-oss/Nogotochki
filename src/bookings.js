@@ -1,26 +1,51 @@
 // src/bookings.js — бизнес-логика записей. ОДНА общая функция создания (п.16).
-const { db, get, run } = require('./db');
-const { getFreeSlots } = require('./availability');
+const { db, get, all, run } = require('./db');
+const { getFreeSlots, dbToMs } = require('./availability');
+const { dbToMskDate } = require('./time');
 
 // Общая функция создания записи. Права/валидация проверяются ДО вызова вызывающим.
 // Возвращает { ok, bookingId, error, code, availableSlots }.
+// startISO/endISO — честный UTC (startD.toISOString() из server.js).
 // Транзакция BEGIN IMMEDIATE (п.18): берёт блокировку записи ДО проверки/вставки,
 // уменьшает риск гонки при одновременном создании двух записей на один слот.
 function createBooking({ clientId, masterId, serviceId, startISO, endISO, createdBy, forceOverlap = 0 }) {
   // Открываем транзакцию с немедленной блокировкой записи
   db.exec('BEGIN IMMEDIATE');
   try {
-    // Повторная проверка конфликта на уровне приложения (защита в коде + триггер БД)
-    const conflict = get(
-      `SELECT id FROM bookings
-       WHERE master_id = ? AND status='active' AND force_overlap=0
-         AND ? < end_time AND ? > start_time`,
-      [masterId, startISO, endISO]
+    // Салонская дата для подсказки свободных слотов: startISO — UTC,
+    // а слоты и расписание живут в московской зоне.
+    const salonDate = dbToMskDate(startISO);
+    const sMs = dbToMs(startISO), eMs = dbToMs(endISO);
+
+    // Повторная проверка конфликта на уровне приложения (защита в коде + триггер БД).
+    // Сравниваем в миллисекундах: в БД смесь старых наивных записей и новых UTC,
+    // строковое сравнение давало бы неверный результат на границах суток.
+    const activeBookings = all(
+      `SELECT id, start_time, end_time FROM bookings
+       WHERE master_id = ? AND status='active' AND force_overlap=0`,
+      [masterId]
     );
-    if (conflict && !(forceOverlap && createdBy)) {
+    const conflictId = activeBookings
+      .find(r => sMs < dbToMs(r.end_time) && eMs > dbToMs(r.start_time))?.id || null;
+    if (conflictId && !(forceOverlap && createdBy)) {
       db.exec('ROLLBACK');
-      const near = getFreeSlots(masterId, startISO.slice(0, 10), 60).slice(0, 5);
+      const near = getFreeSlots(masterId, salonDate, 60).slice(0, 5);
       return { ok: false, code: 'SLOT_UNAVAILABLE', message: 'Выбранное время уже занято', availableSlots: near };
+    }
+
+    // Разовые исключения из графика («Исключения» во вкладке «Расписание»):
+    // в это время мастер не работает, запись нельзя создать даже если
+    // в форме слот почему-то отобразился свободным.
+    const blockRows = all(
+      `SELECT id, start_time, end_time FROM blocks WHERE master_id = ?`,
+      [masterId]
+    );
+    const excludedId = blockRows
+      .find(r => sMs < dbToMs(r.end_time) && eMs > dbToMs(r.start_time))?.id || null;
+    if (excludedId && !(forceOverlap && createdBy)) {
+      db.exec('ROLLBACK');
+      const near = getFreeSlots(masterId, salonDate, 60).slice(0, 5);
+      return { ok: false, code: 'SLOT_UNAVAILABLE', message: 'Мастер не работает в это время', availableSlots: near };
     }
 
     const res = run(

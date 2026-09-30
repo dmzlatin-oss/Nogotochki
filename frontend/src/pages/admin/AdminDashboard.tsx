@@ -4,10 +4,11 @@ import { useNavigate, Link } from 'react-router-dom';
 import { useAuth } from '@/context/AuthContext';
 import { api } from '@/api/client';
 import LoadingState from '@/components/shared/LoadingState';
-import { formatMSK } from '@/data/studio';
+import { formatMSK, formatMSKTime } from '@/data/studio';
 
 interface BookingView { id: number; masterId: number; clientId: number; serviceId: number; masterName?: string; clientName?: string; serviceName?: string; start: string; end: string; status: string; }
 interface ScheduleRow { id: number; master_id: number; master_name?: string; day_of_week: number; work_start: string; work_end: string; }
+interface BlockView { id: number; master_id: number; master_name?: string; start_time: string; end_time: string; reason: string | null; }
 interface AdminData {
   bookings: BookingView[];
   users: { id: number; name: string; email: string; role: string }[];
@@ -15,6 +16,7 @@ interface AdminData {
   services: { id: number; name: string; duration_min: number; price: number; active: number }[];
   links: { master_id: number; service_id: number }[];
   schedule: ScheduleRow[];
+  blocks: BlockView[];
 }
 
 const DAY_NAMES = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
@@ -34,10 +36,10 @@ export default function AdminDashboard() {
     Promise.all([
       api.adminBookings(), api.adminUsers(), api.adminMasters(),
       api.adminServices(), api.adminMasterServices(),
-      api.adminSchedule(),
+      api.adminSchedule(), api.blocks(),
     ])
-      .then(([bookings, users, masters, services, links, schedule]) =>
-        setData({ bookings, users, masters, services, links: links as any, schedule })
+      .then(([bookings, users, masters, services, links, schedule, blocks]) =>
+        setData({ bookings, users, masters, services, links: links as any, schedule, blocks })
       )
       .catch(() => setData(null));
   };
@@ -69,6 +71,11 @@ export default function AdminDashboard() {
   const deleteSchedule = (s: ScheduleRow) => {
     if (!confirm(`Убрать ${DAY_NAMES[s.day_of_week]} у ${s.master_name}?\n${s.work_start}–${s.work_end}`)) return;
     run(() => api.adminDeleteSchedule(s.id), 'День убран из графика');
+  };
+
+  const deleteBlock = (bl: BlockView) => {
+    if (!confirm(`Удалить исключение?\n${bl.master_name} · ${formatMSK(bl.start_time)} – ${formatMSK(bl.end_time)}\n${bl.reason || 'без причины'}`)) return;
+    run(() => api.deleteBlock(bl.id), 'Исключение удалено');
   };
 
   const toggleCatalog = (m: { id: number; name: string }, s: { id: number; name: string }, on: boolean) => {
@@ -144,7 +151,7 @@ export default function AdminDashboard() {
                     <b>#{b.id}</b> · {b.serviceName || `услуга #${b.serviceId}`} · {b.masterName || `#${b.masterId}`}
                     <br />
                     <span className="text-stone-500">
-                      {b.clientName} · {formatMSK(b.start)} – {formatMSK(b.end)}
+                      {b.clientName} · {formatMSK(b.start).replace(' МСК','')} – {formatMSKTime(b.end)}
                     </span>
                   </span>
                   <span className="flex items-center gap-3">
@@ -215,6 +222,42 @@ export default function AdminDashboard() {
                 </div>
               );
             })}
+
+            {/* Разовые исключения из графика: конкретная дата, конкретные часы */}
+            <div className="rounded-2xl border border-stone-200 bg-white p-4">
+              <h2 className="mb-1 text-sm font-medium text-ink-900">Исключения</h2>
+              <p className="mb-3 text-xs text-stone-500">
+                Разовая незанятость в конкретную дату: обед, отпуск, «в этот день не работает».
+                Повторяющийся график выше не меняется — исключение действует только на указанную дату.
+                Клиент такие слоты видит как «занято», и записаться в них нельзя.
+              </p>
+              <ul className="mb-3 divide-y divide-stone-100 rounded-xl border border-stone-200 text-sm">
+                {data.blocks.map((bl) => (
+                  <li key={bl.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
+                    <span>
+                      <b>{bl.master_name || `мастер #${bl.master_id}`}</b>{' '}
+                      <span className="text-stone-500">
+                        {formatMSK(bl.start_time)} – {formatMSKTime(bl.end_time)}
+                        {bl.reason ? ` · ${bl.reason}` : ''}
+                      </span>
+                    </span>
+                    <button
+                      onClick={() => deleteBlock(bl)}
+                      className="rounded-lg border border-rose-200 px-2.5 py-1 text-xs text-rose-700 hover:bg-rose-50"
+                    >
+                      удалить
+                    </button>
+                  </li>
+                ))}
+                {data.blocks.length === 0 && (
+                  <li className="px-3 py-2 text-stone-500">исключений нет</li>
+                )}
+              </ul>
+              <AddBlockForm
+                masters={data.masters}
+                onSubmit={(p) => run(() => api.createBlock(p), 'Исключение добавлено')}
+              />
+            </div>
           </section>
         )}
 
@@ -428,6 +471,73 @@ function AddServiceForm({ onSubmit }: {
         className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 disabled:opacity-40"
       >
         Создать услугу
+      </button>
+    </div>
+  );
+}
+
+function AddBlockForm({ masters, onSubmit }: {
+  masters: { id: number; name: string }[];
+  onSubmit: (p: { master_id: number; start_time: string; end_time: string; reason: string }) => void;
+}) {
+  const [mid, setMid] = useState(masters[0]?.id ?? 1);
+  const [date, setDate] = useState('');
+  const [allDay, setAllDay] = useState(false);
+  const [from, setFrom] = useState('12:00');
+  const [to, setTo] = useState('14:00');
+  const [reason, setReason] = useState('');
+
+  const label = allDay ? 'не работает весь день' : `${from}–${to}`;
+
+  return (
+    <div className="flex flex-wrap items-end gap-2 text-xs">
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">Мастер</span>
+        <select value={mid} onChange={(e) => setMid(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5">
+          {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">Дата</span>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex items-center gap-1.5 pb-1.5">
+        <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} className="accent-primary-600" />
+        <span className="text-stone-500">весь день</span>
+      </label>
+      {!allDay && (
+        <>
+          <label className="flex flex-col gap-1">
+            <span className="text-stone-400">С</span>
+            <input type="time" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-stone-400">До</span>
+            <input type="time" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+          </label>
+        </>
+      )}
+      <label className="flex min-w-32 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Причина</span>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="обед / отпуск" className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <button
+        onClick={() => {
+          if (!date) return;
+          if (!allDay && to <= from) { alert('Время «до» должно быть позже времени «с»'); return; }
+          if (!confirm(`Добавить исключение?\nМастер не работает ${date}, ${label}${reason ? `\nПричина: ${reason}` : ''}`)) return;
+          onSubmit({
+            master_id: mid,
+            start_time: `${date}T${allDay ? '00:00' : from}:00`,
+            end_time: `${date}T${allDay ? '23:59' : to}:00`,
+            reason,
+          });
+          setReason(''); setDate('');
+        }}
+        disabled={!date}
+        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 disabled:opacity-40"
+      >
+        Добавить
       </button>
     </div>
   );

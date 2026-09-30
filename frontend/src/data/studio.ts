@@ -77,39 +77,33 @@ export function getDemoDates(count = 7): DemoDate[] {
   return out;
 }
 
-// Форматирование даты/времени салона.
+// Форматирование даты/времени САЛОНА (Europe/Moscow, UTC+3).
 //
-// Бэкенд хранит и отдаёт время как «наивное» салонское с суффиксом Z
-// (например "2026-10-01T13:00:00Z" = 13:00 по Москве). Раньше здесь
-// дополнительно прибавлялись 3 часа, из-за чего админ-панель показывала
-// блокировку «13:00–14:00» как «16:00–17:00», а слоты на клиентской форме
-// (которые считает бэкенд из тех же строк) не совпадали с админкой.
-//
-// Слоты и график считаются бэкендом из наивного времени, поэтому и здесь
-// нужно просто отбросить суффикс Z, без конвертации таймзон.
+// В БД лежит честный UTC ('2026-10-01T07:00:00.000Z'), пользователь выбирает
+// салонское время ('10:00') независимо от своего часового пояса. Здесь UTC
+// переводится в московское — без привязки к таймзоне устройства клиента,
+// иначе запись из Калининграда или Новосибирска показывалась бы неверно.
+const MSK_OFFSET_MIN = 180;
+
 export function formatMSK(isoDate: string | null | undefined): string {
   if (!isoDate) return '—';
-  const m = String(isoDate).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
-  if (m) return `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}`;
   const d = new Date(isoDate);
-  if (isNaN(d.getTime())) return isoDate;
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const year = d.getUTCFullYear();
-  const hours = String(d.getUTCHours()).padStart(2, '0');
-  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${day}.${month}.${year} ${hours}:${minutes}`;
+  if (isNaN(d.getTime())) return String(isoDate);
+  const msk = new Date(d.getTime() + MSK_OFFSET_MIN * 60000);
+  const day = String(msk.getUTCDate()).padStart(2, '0');
+  const month = String(msk.getUTCMonth() + 1).padStart(2, '0');
+  const year = msk.getUTCFullYear();
+  const hours = String(msk.getUTCHours()).padStart(2, '0');
+  const minutes = String(msk.getUTCMinutes()).padStart(2, '0');
+  return `${day}.${month}.${year} ${hours}:${minutes} МСК`;
 }
 
-// Только время (часы:минуты) салона — тот же наивный формат, см. formatMSK
+// Только время салона 'ЧЧ:ММ' — см. formatMSK
 export function formatMSKTime(isoDate: string | null | undefined): string {
   if (!isoDate) return '—';
-  const m = String(isoDate).match(/[T ](\d{2}):(\d{2})/);
-  if (m) return `${m[1]}:${m[2]}`;
   const d = new Date(isoDate);
-  if (isNaN(d.getTime())) return isoDate;
-  const hours = String(d.getUTCHours()).padStart(2, '0');
-  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
-  return `${hours}:${minutes}`;
+  if (isNaN(d.getTime())) return String(isoDate);
+  const msk = new Date(d.getTime() + MSK_OFFSET_MIN * 60000);
+  return `${String(msk.getUTCHours()).padStart(2, '0')}:${String(msk.getUTCMinutes()).padStart(2, '0')}`;
 }
 

@@ -122,8 +122,10 @@ export const api = {
   },
 
   // --- Запись ---
-  // Фронт шлёт date (YYYY-MM-DD), time (HH:MM), masterId/serviceId (string).
-  // Время интерпретируется как часовой пояс салона Europe/Moscow (UTC+3).
+  // Фронт шлёт date (YYYY-MM-DD), time (HH:MM), masterId/serviceId.
+  // Время — САЛОНСКОЕ (Europe/Moscow) и уходит БЕЗ суффикса Z:
+  // сервер сам приводит его к UTC. Раньше здесь стояло `${...}:00Z`,
+  // из-за чего сервер считал 10:00 московским и запись уходила на 3 часа назад.
   async createBooking(input: {
     masterId: string;
     serviceId: string;
@@ -132,15 +134,20 @@ export const api = {
     durationMin: number;
     clientId?: string;
   }) {
-    const startISO = `${input.date}T${input.time}:00Z`;
-    const endDate = new Date(
-      new Date(startISO).getTime() + input.durationMin * 60000
-    ).toISOString();
+    const startSalon = `${input.date}T${input.time}:00`;
+    // Конец считаем в минутах от начала, в салонской зоне,
+    // чтобы при переходе через полночь дата не «уехала» в UTC.
+    const [h, m] = input.time.split(':').map(Number);
+    const endTotal = h * 60 + m + input.durationMin;
+    const endH = Math.floor(endTotal / 60) % 24;
+    const endM = endTotal % 60;
+    const endSalon = `${input.date}T${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}:00`;
+
     const body: any = {
       masterId: Number(input.masterId),
       serviceId: Number(input.serviceId),
-      start: startISO,
-      end: endDate,
+      start: startSalon,
+      end: endSalon,
     };
     if (input.clientId) body.clientId = Number(input.clientId);
     return request<{ booking: any }>('/bookings', { method: 'POST', body: JSON.stringify(body) });
@@ -193,6 +200,8 @@ export const api = {
     const r = await request<{ blocks: any[] }>('/blocks');
     return r.blocks;
   },
+  // Разовые исключения из графика — управляются в разделе «Исключения»
+  // внутри вкладки «Расписание».
   async createBlock(input: { master_id: number; start_time: string; end_time: string; reason: string }) {
     return request('/admin/blocks', { method: 'POST', body: JSON.stringify(input) });
   },

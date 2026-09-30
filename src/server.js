@@ -7,6 +7,7 @@ const auth = require('./auth');
 const { authenticateToken, requireRole, isOwner } = require('./middleware');
 const { getFreeSlots, getFreeIntervals, getSlotStatuses } = require('./availability');
 const { createBooking, cancelBooking } = require('./bookings');
+const { parseSalonTime, toMskDow, dbToMskTime, dbToMskDate, toMskNaive, dbToMsSafe } = require('./time');
 
 // Rate limiter for auth endpoints
 const authLimiter = rateLimit({ max: 5, windowMs: 60000 });
@@ -165,9 +166,12 @@ app.post('/api/bookings', authenticateToken, (req, res) => {
     const service = get('SELECT id, duration_min FROM services WHERE id = ? AND active = 1', [serviceId]);
     if (!service) return sendError(res, 404, 'NOT_FOUND', 'Услуга не найдена');
 
-    // Валидация формата времени
-    const startD = new Date(start), endD = new Date(end);
-    if (isNaN(startD) || isNaN(endD) || endD <= startD) return sendError(res, 400, 'VALIDATION', 'Некорректные дата/время');
+    // Валидация формата времени.
+    // Клиент присылает САЛОНСКОЕ время (Europe/Moscow) без суффикса.
+    // Раньше здесь был new Date(start) — он трактовал строку как локальное
+    // время сервера (TZ=MSK) и сдвигал запись на 3 часа назад.
+    const startD = parseSalonTime(start), endD = parseSalonTime(end);
+    if (!startD || !endD || endD <= startD) return sendError(res, 400, 'VALIDATION', 'Некорректные дата/время');
     // Длительность должна соответствовать услуге (сервер определяет, не клиент)
     const expectedEnd = new Date(startD.getTime() + service.duration_min * 60000);
     if (Math.abs(expectedEnd.getTime() - endD.getTime()) > 60000) {
@@ -175,13 +179,14 @@ app.post('/api/bookings', authenticateToken, (req, res) => {
     }
     // Не в прошлом
     if (startD.getTime() < Date.now() - 60000) return sendError(res, 400, 'VALIDATION', 'Нельзя записаться в прошлое');
-    // Услуга должна целиком уложиться в рабочие часы мастера на этот день
-    // (совпадает с логикой slotStatuses: иначе слот 'tooshort' прошёл бы мимо проверки).
-    const dDow = new Date(startD.toISOString().slice(0, 10) + 'T00:00:00Z').getUTCDay();
+    // Услуга должна целиком уложиться в рабочие часы мастера на этот день.
+    // День недели и время сравниваем в салонской зоне, не в UTC:
+    // запись в 02:00 MSK имеет UTC-дату предыдущего дня.
+    const dDow = toMskDow(startD);
     const schedRow = get('SELECT work_end FROM schedule WHERE master_id = ? AND day_of_week = ?', [masterId, dDow]);
     const mRow = get('SELECT work_end FROM masters WHERE id = ?', [masterId]);
     const dayEnd = (schedRow && schedRow.work_end) || (mRow && mRow.work_end) || '19:00';
-    if (endD.toISOString().slice(11, 16) > dayEnd) {
+    if (dbToMskTime(endD.toISOString()) > dayEnd) {
       return sendError(res, 400, 'VALIDATION', `Услуга должна закончиться не позже ${dayEnd} (конец рабочего дня)`);
     }
 
@@ -482,38 +487,47 @@ app.patch('/api/bookings/:id', authenticateToken, (req, res) => {
     
     // Перенос (изменение времени) — может делать клиент (своя запись), мастер (своя запись), admin (любая)
     if (start && end) {
-      const startD = new Date(start);
-      const endD = new Date(end);
-      if (isNaN(startD) || isNaN(endD) || endD <= startD) {
+      // Салонское время без суффикса → UTC (см. src/time.js).
+      const startD = parseSalonTime(start);
+      const endD = parseSalonTime(end);
+      if (!startD || !endD || endD <= startD) {
         return sendError(res, 400, 'VALIDATION', 'Некорректные дата/время');
       }
       if (startD.getTime() < Date.now() - 60000) {
         return sendError(res, 400, 'VALIDATION', 'Нельзя перенести в прошлое');
       }
-      
+
       // Проверяем, что новый слот свободен (как при создании записи)
       const service = get('SELECT duration_min FROM services WHERE id = ?', [b.service_id]);
       if (!service) return sendError(res, 404, 'NOT_FOUND', 'Услуга не найдена');
-      
+
       const expectedEnd = new Date(startD.getTime() + service.duration_min * 60000);
       if (Math.abs(expectedEnd.getTime() - endD.getTime()) > 60000) {
         return sendError(res, 400, 'VALIDATION', `Длительность должна быть ${service.duration_min} мин`);
       }
-      
+
       // Проверяем конфликты (как в createBooking)
       const conflict = get(`SELECT id FROM bookings WHERE master_id = ? AND status = 'active' AND force_overlap = 0
-        AND id != ? AND start_time < ? AND end_time > ?`, 
+        AND id != ? AND start_time < ? AND end_time > ?`,
         [b.master_id, bookingId, endD.toISOString(), startD.toISOString()]);
       if (conflict) {
         return sendError(res, 409, 'SLOT_UNAVAILABLE', 'На это время уже есть активная запись');
       }
-      
-      // Проверяем, что вписывается в рабочие часы
-      const dDow = new Date(startD.toISOString().slice(0, 10) + 'T00:00:00Z').getUTCDay();
+
+      // Разовые исключения из графика — в это время мастер не работает
+      const excluded = get(`SELECT id FROM blocks
+        WHERE master_id = ? AND start_time < ? AND end_time > ?`,
+        [b.master_id, endD.toISOString(), startD.toISOString()]);
+      if (excluded) {
+        return sendError(res, 409, 'SLOT_UNAVAILABLE', 'Мастер не работает в это время');
+      }
+
+      // Проверяем, что вписывается в рабочие часы (салонская зона)
+      const dDow = toMskDow(startD);
       const schedRow = get('SELECT work_end FROM schedule WHERE master_id = ? AND day_of_week = ?', [b.master_id, dDow]);
       const mRow = get('SELECT work_end FROM masters WHERE id = ?', [b.master_id]);
       const dayEnd = (schedRow && schedRow.work_end) || (mRow && mRow.work_end) || '19:00';
-      if (endD.toISOString().slice(11, 16) > dayEnd) {
+      if (dbToMskTime(endD.toISOString()) > dayEnd) {
         return sendError(res, 400, 'VALIDATION', `Услуга должна закончиться не позже ${dayEnd} (конец рабочего дня)`);
       }
       
@@ -664,14 +678,25 @@ app.post('/api/admin/blocks', authenticateToken, requireRole('admin'), (req, res
     }
     const master = get('SELECT id FROM masters WHERE id = ?', [master_id]);
     if (!master) return sendError(res, 404, 'NOT_FOUND', 'Мастер не найден');
-    
+
+    // Форма присылает САЛОНСКОЕ время без суффикса ('2026-10-08T12:00:00').
+    // В БД храним честный UTC — конвертируем здесь.
+    const startD = parseSalonTime(start_time);
+    const endD = parseSalonTime(end_time);
+    if (!startD || !endD || endD <= startD) {
+      return sendError(res, 400, 'VALIDATION', 'Некорректные дата/время');
+    }
+    const startUtc = startD.toISOString();
+    const endUtc = endD.toISOString();
+
     // Проверяем, не пересекается ли с существующей блокировкой
-    const ex = get('SELECT id FROM blocks WHERE master_id = ? AND start_time < ? AND end_time > ?',
-      [master_id, end_time, start_time]);
-    if (ex) return sendError(res, 409, 'OVERLAP', 'Пересекается с существующей блокировкой');
-    
+    const existing = all('SELECT id, start_time, end_time FROM blocks WHERE master_id = ?', [master_id]);
+    const sMs = startD.getTime(), eMs = endD.getTime();
+    const overlaps = existing.some(b => sMs < dbToMsSafe(b.end_time) && eMs > dbToMsSafe(b.start_time));
+    if (overlaps) return sendError(res, 409, 'OVERLAP', 'Пересекается с существующей блокировкой');
+
     const r = run('INSERT INTO blocks (master_id, start_time, end_time, reason) VALUES (?,?,?,?)',
-      [master_id, start_time, end_time, reason || null]);
+      [master_id, startUtc, endUtc, reason || null]);
     return res.status(201).json({ ok: true, blockId: Number(r.lastInsertRowid) });
   } catch (e) {
     return sendError(res, 500, 'INTERNAL', 'Внутренняя ошибка');

@@ -205,10 +205,17 @@ export default function BookingPage() {
                 <div className="mt-5">
                   <div className="mb-3 flex items-center justify-between">
                     <p className="text-sm text-stone-500">
-                      Время указано по местному времени
+                      {/* Время всегда московское — салон работает в Europe/Moscow.
+                          Раньше здесь было «по местному времени», из-за чего клиент
+                          из другого часового пояса записался бы не на тот час. */}
+                      <span className="font-medium text-stone-700">Московское время (МСК)</span>
+                      {' · '}
+                      <span className="text-xs">
+                        время салона, независимо от того, где вы находитесь
+                      </span>
                       {workHours.start && workHours.end && (
                         <span className="ml-1 font-medium text-stone-600">
-                          · мастер принимает с {workHours.start} до {workHours.end}
+                          · мастер принимает с {workHours.start} до {workHours.end} МСК
                         </span>
                       )}
                     </p>
