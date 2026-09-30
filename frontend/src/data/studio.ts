@@ -37,42 +37,79 @@ export function formatDateLabel(isoDate: string | null | undefined): string {
   return `${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
-// Демо-даты для отладки (используются в BookingPage)
-export function getDemoDates(): { date: string; time: string }[] {
-  return [
-    { date: '2026-10-05', time: '10:00' },
-    { date: '2026-10-05', time: '11:30' },
-    { date: '2026-10-06', time: '10:00' },
-    { date: '2026-10-06', time: '14:00' },
-    { date: '2026-10-07', time: '11:00' },
-  ];
+// Дата для DateStrip. Раньше здесь была заглушка getDemoDates() с 5
+// «демо»-записями вида {date, time}, а компонент DateStrip ожидал
+// {iso, weekday, day, month}. Все поля были undefined → 5 пустых кнопок
+// без дат, и выбрать время было невозможно.
+export interface DemoDate {
+  iso: string;
+  weekday: string;
+  day: string;
+  month: string;
 }
 
-// Форматирование времени в московском часовом поясе (UTC+3)
+const WEEKDAYS = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+// Ближайшие рабочие дни: студия работает вторник–суббота (вс=0, пн=1 — выходные).
+export function getDemoDates(count = 7): DemoDate[] {
+  const out: DemoDate[] = [];
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  // Не предлагаем сегодняшний день, если он уже почти закончился
+  if (d.getHours() >= 18) d.setDate(d.getDate() + 1);
+
+  let guard = 0;
+  while (out.length < count && guard < 60) {
+    guard++;
+    const wd = d.getDay();
+    if (wd !== 0 && wd !== 1) {
+      const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      out.push({
+        iso,
+        weekday: WEEKDAYS[wd],
+        day: String(d.getDate()),
+        month: MONTHS[d.getMonth()],
+      });
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+// Форматирование даты/времени салона.
+//
+// Бэкенд хранит и отдаёт время как «наивное» салонское с суффиксом Z
+// (например "2026-10-01T13:00:00Z" = 13:00 по Москве). Раньше здесь
+// дополнительно прибавлялись 3 часа, из-за чего админ-панель показывала
+// блокировку «13:00–14:00» как «16:00–17:00», а слоты на клиентской форме
+// (которые считает бэкенд из тех же строк) не совпадали с админкой.
+//
+// Слоты и график считаются бэкендом из наивного времени, поэтому и здесь
+// нужно просто отбросить суффикс Z, без конвертации таймзон.
 export function formatMSK(isoDate: string | null | undefined): string {
   if (!isoDate) return '—';
+  const m = String(isoDate).match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (m) return `${m[3]}.${m[2]}.${m[1]} ${m[4]}:${m[5]}`;
   const d = new Date(isoDate);
   if (isNaN(d.getTime())) return isoDate;
-  // UTC+3 = UTC+3 часа
-  const utc = d.getTime() + (3 * 60 * 60 * 1000);
-  const msk = new Date(utc);
-  const day = String(msk.getUTCDate()).padStart(2, '0');
-  const month = String(msk.getUTCMonth() + 1).padStart(2, '0');
-  const year = msk.getUTCFullYear();
-  const hours = String(msk.getUTCHours()).padStart(2, '0');
-  const minutes = String(msk.getUTCMinutes()).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
+  const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const year = d.getUTCFullYear();
+  const hours = String(d.getUTCHours()).padStart(2, '0');
+  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
   return `${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
-// Только время (часы:минуты) в московском часовом поясе
+// Только время (часы:минуты) салона — тот же наивный формат, см. formatMSK
 export function formatMSKTime(isoDate: string | null | undefined): string {
   if (!isoDate) return '—';
+  const m = String(isoDate).match(/[T ](\d{2}):(\d{2})/);
+  if (m) return `${m[1]}:${m[2]}`;
   const d = new Date(isoDate);
   if (isNaN(d.getTime())) return isoDate;
-  const utc = d.getTime() + (3 * 60 * 60 * 1000);
-  const msk = new Date(utc);
-  const hours = String(msk.getUTCHours()).padStart(2, '0');
-  const minutes = String(msk.getUTCMinutes()).padStart(2, '0');
+  const hours = String(d.getUTCHours()).padStart(2, '0');
+  const minutes = String(d.getUTCMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
 }
 

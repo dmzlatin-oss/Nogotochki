@@ -7,27 +7,94 @@ import LoadingState from '@/components/shared/LoadingState';
 import { formatMSK } from '@/data/studio';
 
 interface BookingView { id: number; masterId: number; clientId: number; serviceId: number; masterName?: string; clientName?: string; serviceName?: string; start: string; end: string; status: string; }
+interface ScheduleRow { id: number; master_id: number; master_name?: string; day_of_week: number; work_start: string; work_end: string; }
+interface BlockView { id: number; master_id: number; master_name?: string; start_time: string; end_time: string; reason: string; }
 interface AdminData {
   bookings: BookingView[];
   users: { id: number; name: string; email: string; role: string }[];
   masters: { id: number; name: string; specialization: string }[];
   services: { id: number; name: string; duration_min: number; price: number; active: number }[];
   links: { master_id: number; service_id: number }[];
+  schedule: ScheduleRow[];
+  blocks: BlockView[];
 }
+
+const DAY_NAMES = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
+const DAY_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+
+type Tab = 'bookings' | 'schedule' | 'blocks' | 'catalog';
 
 export default function AdminDashboard() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [data, setData] = useState<AdminData | null>(null);
+  const [tab, setTab] = useState<Tab>('bookings');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const load = () => {
-    Promise.all([api.adminBookings(), api.adminUsers(), api.adminMasters(), api.adminServices(), api.adminMasterServices()])
-      .then(([bookings, users, masters, services, links]) =>
-        setData({ bookings, users, masters, services, links: links as any })
+    Promise.all([
+      api.adminBookings(), api.adminUsers(), api.adminMasters(),
+      api.adminServices(), api.adminMasterServices(),
+      api.adminSchedule(), api.blocks(),
+    ])
+      .then(([bookings, users, masters, services, links, schedule, blocks]) =>
+        setData({ bookings, users, masters, services, links: links as any, schedule, blocks })
       )
       .catch(() => setData(null));
   };
   useEffect(load, []);
+
+  const flash = (kind: 'ok' | 'err', text: string) => {
+    setMsg({ kind, text });
+    setTimeout(() => setMsg(null), 4000);
+  };
+
+  const run = async (fn: () => Promise<any>, okText: string) => {
+    setBusy(true);
+    try {
+      await fn();
+      load();
+      flash('ok', okText);
+    } catch (e: any) {
+      flash('err', e?.message || 'Не удалось выполнить');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelBooking = (b: BookingView) => {
+    if (!confirm(`Отменить запись #${b.id}?\n${b.clientName} · ${b.serviceName}\n${formatMSK(b.start)}`)) return;
+    run(() => api.cancelBooking(b.id), `Запись #${b.id} отменена`);
+  };
+
+  const deleteBlock = (bl: BlockView) => {
+    if (!confirm(`Удалить блокировку?\n${bl.master_name} · ${formatMSK(bl.start_time)}–${formatMSK(bl.end_time)}\n${bl.reason || ''}`)) return;
+    run(() => api.deleteBlock(bl.id), 'Блокировка удалена');
+  };
+
+  const deleteSchedule = (s: ScheduleRow) => {
+    if (!confirm(`Убрать ${DAY_NAMES[s.day_of_week]} у ${s.master_name}?\n${s.work_start}–${s.work_end}`)) return;
+    run(() => api.adminDeleteSchedule(s.id), 'День убран из графика');
+  };
+
+  const toggleCatalog = (m: { id: number; name: string }, s: { id: number; name: string }, on: boolean) => {
+    run(
+      () => (on
+        ? request_link(m.id, s.id, 'POST')
+        : request_link(m.id, s.id, 'DELETE')),
+      on ? `${m.name} → ${s.name}` : `${m.name} ✕ ${s.name}`
+    );
+  };
+
+  async function request_link(masterId: number, serviceId: number, method: string) {
+    const res = await fetch(`/nogotochki/api/admin/master-services`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('booking_token') || ''}` },
+      body: JSON.stringify({ master_id: masterId, service_id: serviceId }),
+    });
+    if (!res.ok && res.status !== 204) throw new Error('Ошибка сервера');
+  }
 
   return (
     <div className="min-h-screen bg-stone-50">
@@ -36,51 +103,189 @@ export default function AdminDashboard() {
           <span className="font-display text-lg font-semibold text-ink-900">Админ-панель</span>
           <span className="text-sm text-stone-500">{user?.name}</span>
           <div className="flex items-center gap-3 text-sm">
-            <Link to="/" className="text-stone-500 hover:text-ink-800">← На главную</Link>
-            <button onClick={() => { logout(); navigate('/'); }} className="text-stone-400 hover:text-stone-700">Выйти</button>
+            <Link to="/" className="text-stone-500 hover:text-ink-800">← На главная</Link>
+            <button onClick={() => { logout(); navigate('/'); }} className="text-stone-400 hover:text-ink-700">Выйти</button>
           </div>
         </div>
       </header>
 
-      <div className="mx-auto max-w-5xl space-y-10 px-6 py-10">
-        {!data && <LoadingState />}
-        {data && (
-          <>
-            <Section title={`Записи (${data.bookings.length})`}>
-              <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
-                {data.bookings.map((b) => (
-                  <li key={b.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                    <span>
-                      #{b.id} · {b.serviceName || `услуга #${b.serviceId}`} · мастер {b.masterName || `#${b.masterId}`} · клиент {b.clientName || `#${b.clientId}`}
-                    </span>
-                    <span className="text-stone-500">{formatMSK(b.start)} · {b.status === 'active' ? 'активна' : b.status}</span>
-                  </li>
-                ))}
-                {data.bookings.length === 0 && <li className="px-4 py-3 text-sm text-stone-500">нет записей</li>}
-              </ul>
-            </Section>
+      <div className="mx-auto max-w-5xl space-y-6 px-6 py-8">
+        {/* Вкладки */}
+        <nav className="flex flex-wrap gap-2">
+          {([
+            ['bookings', `Записи${data ? ` (${data.bookings.filter(b => b.status === 'active').length})` : ''}`],
+            ['schedule', 'Расписание'],
+            ['blocks', `Блокировки${data ? ` (${data.blocks.length})` : ''}`],
+            ['catalog', 'Услуги и мастера'],
+          ] as [Tab, string][]).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                tab === key ? 'bg-primary-600 text-white shadow-card' : 'border border-stone-200 bg-white text-stone-600 hover:border-stone-300'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
 
-            <Section title="Услуги и мастера (связи)">
+        {msg && (
+          <div className={`rounded-xl px-4 py-3 text-sm ${msg.kind === 'ok' ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'}`}>
+            {msg.text}
+          </div>
+        )}
+
+        {!data && <LoadingState />}
+        {data && busy && <div className="text-sm text-stone-500">Выполняется…</div>}
+
+        {/* ЗАПИСИ */}
+        {data && tab === 'bookings' && (
+          <section className="space-y-3">
+            <p className="text-sm text-stone-500">
+              Клиент отменяет свою запись в разделе «Мои записи». Здесь администратор может отменить любую.
+            </p>
+            <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
+              {data.bookings.map((b) => (
+                <li key={b.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                  <span>
+                    <b>#{b.id}</b> · {b.serviceName || `услуга #${b.serviceId}`} · {b.masterName || `#${b.masterId}`}
+                    <br />
+                    <span className="text-stone-500">
+                      {b.clientName} · {formatMSK(b.start)} – {formatMSK(b.end)}
+                    </span>
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <span className={b.status === 'active' ? 'text-emerald-700' : 'text-stone-400 line-through'}>
+                      {b.status === 'active' ? 'активна' : b.status === 'cancelled' ? 'отменена' : b.status}
+                    </span>
+                    {b.status === 'active' && (
+                      <button
+                        onClick={() => cancelBooking(b)}
+                        className="rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50"
+                      >
+                        Отменить
+                      </button>
+                    )}
+                  </span>
+                </li>
+              ))}
+              {data.bookings.length === 0 && <li className="px-4 py-3 text-sm text-stone-500">нет записей</li>}
+            </ul>
+          </section>
+        )}
+
+        {/* РАСПИСАНИЕ */}
+        {data && tab === 'schedule' && (
+          <section className="space-y-4">
+            <p className="text-sm text-stone-500">
+              Рабочие дни мастеров. Если день не указан — мастер не работает. Слоты на клиентской форме строятся по этим данным.
+            </p>
+            {data.masters.map((m) => {
+              const rows = data.schedule.filter((s) => s.master_id === m.id);
+              return (
+                <div key={m.id} className="rounded-2xl border border-stone-200 bg-white p-4">
+                  <p className="mb-3 font-medium text-ink-900">{m.name}</p>
+                  <div className="grid grid-cols-7 gap-1.5">
+                    {DAY_SHORT.map((d, i) => {
+                      const row = rows.find((r) => r.day_of_week === i);
+                      return (
+                        <div key={i} className={`rounded-xl border px-2 py-2 text-center text-xs ${
+                          row ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-stone-100 bg-stone-50 text-stone-300'
+                        }`}>
+                          <div className="font-semibold uppercase">{d}</div>
+                          {row ? (
+                            <>
+                              <div className="mt-0.5">{row.work_start}</div>
+                              <div className="mt-0.5">{row.work_end}</div>
+                              <button
+                                onClick={() => deleteSchedule(row)}
+                                className="mt-1 text-[10px] text-rose-500 hover:underline"
+                              >
+                                убрать
+                              </button>
+                            </>
+                          ) : (
+                            <div className="mt-1">—</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="mt-3">
+                    <AddScheduleForm
+                      masters={data.masters}
+                      onSubmit={(mid, dow, ws, we) =>
+                        run(() => api.adminSetSchedule(mid, dow, ws, we), `График сохранён: ${DAY_NAMES[dow]}`)
+                      }
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </section>
+        )}
+
+        {/* БЛОКИРОВКИ */}
+        {data && tab === 'blocks' && (
+          <section className="space-y-3">
+            <p className="text-sm text-stone-500">
+              Блокировки — занятое время, которое создаёт администратор: обед, отпуск, личный кабинет. Клиент такие слоты видит как «занято».
+            </p>
+            <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
+              {data.blocks.map((bl) => (
+                <li key={bl.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
+                  <span>
+                    {bl.master_name || `мастер #${bl.master_id}`}
+                    <br />
+                    <span className="text-stone-500">
+                      {formatMSK(bl.start_time)} – {formatMSK(bl.end_time)}
+                      {bl.reason ? ` · ${bl.reason}` : ''}
+                    </span>
+                  </span>
+                  <button
+                    onClick={() => deleteBlock(bl)}
+                    className="rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50"
+                  >
+                    Удалить
+                  </button>
+                </li>
+              ))}
+              {data.blocks.length === 0 && <li className="px-4 py-3 text-sm text-stone-500">блокировок нет</li>}
+            </ul>
+            <div className="rounded-2xl border border-stone-200 bg-white p-4">
+              <p className="mb-3 text-sm font-medium text-ink-900">Новая блокировка</p>
+              <AddBlockForm
+                masters={data.masters}
+                onSubmit={(payload) => run(() => api.createBlock(payload), 'Блокировка создана')}
+              />
+            </div>
+          </section>
+        )}
+
+        {/* КАТАЛОГ */}
+        {data && tab === 'catalog' && (
+          <section className="space-y-6">
+            <div>
+              <h2 className="mb-3 text-sm font-medium text-ink-900">Связи мастеров и услуг</h2>
               <div className="space-y-4">
                 {data.masters.map((m) => {
                   const linked = new Set(data.links.filter((l) => l.master_id === m.id).map((l) => l.service_id));
                   return (
                     <div key={m.id} className="rounded-2xl border border-stone-200 bg-white p-4">
-                      <p className="mb-2 font-medium text-ink-900">{m.name} <span className="text-sm font-normal text-stone-500">· {m.specialization}</span></p>
+                      <p className="mb-2 font-medium text-ink-900">{m.name}</p>
                       <div className="flex flex-wrap gap-2">
                         {data.services.map((s) => {
                           const on = linked.has(s.id);
                           return (
                             <button
                               key={s.id}
-                              onClick={async () => {
-                                if (on) await api.adminRemoveMasterService(m.id, s.id);
-                                else await api.adminAddMasterService(m.id, s.id);
-                                load();
-                              }}
-                              className={`rounded-full px-3 py-1 text-xs font-medium transition ${on ? 'bg-primary-600 text-white' : 'bg-stone-100 text-stone-600 hover:bg-stone-200'}`}
+                              onClick={() => toggleCatalog(m, s, !on)}
+                              className={`rounded-full px-3 py-1.5 text-xs ${
+                                on ? 'bg-primary-600 text-white' : 'border border-stone-200 text-stone-500 hover:border-stone-300'
+                              }`}
                             >
-                              {s.name} {on ? '✓' : '+'}
+                              {s.name}
                             </button>
                           );
                         })}
@@ -89,202 +294,121 @@ export default function AdminDashboard() {
                   );
                 })}
               </div>
-            </Section>
-
-            <Section title="Добавить мастера">
-              <AddMasterForm services={data.services} onDone={load} />
-            </Section>
-
-            <Section title="Добавить услугу">
-              <AddServiceForm onDone={load} />
-            </Section>
-
-            <Section title="Создать запись (от лица клиента)">
-              <AddBookingForm
-                users={data.users.filter((u) => u.role === 'client')}
-                masters={data.masters}
-                services={data.services}
-                onDone={load}
-              />
-            </Section>
-
-            <Section title={`Пользователи (${data.users.length})`}>
-              <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
-                {data.users.map((u) => (
-                  <li key={u.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                    <span>{u.name} · {u.email}</span>
-                    <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs text-stone-600">{u.role}</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-
-            <Section title={`Мастера (${data.masters.length})`}>
-              <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
-                {data.masters.map((m) => (
-                  <li key={m.id} className="px-4 py-3 text-sm">{m.name} · {m.specialization}</li>
-                ))}
-              </ul>
-            </Section>
-
-            <Section title={`Услуги (${data.services.length})`}>
-              <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
-                {data.services.map((s) => (
-                  <li key={s.id} className="flex items-center justify-between px-4 py-3 text-sm">
-                    <span>{s.name}</span>
-                    <span className="text-stone-500">{s.duration_min} мин · {s.price} ₽</span>
-                  </li>
-                ))}
-              </ul>
-            </Section>
-          </>
+            </div>
+            <div className="grid gap-6 sm:grid-cols-2">
+              <div>
+                <h2 className="mb-2 text-sm font-medium text-ink-900">Мастера ({data.masters.length})</h2>
+                <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white text-sm">
+                  {data.masters.map((m) => (
+                    <li key={m.id} className="px-4 py-2.5">
+                      {m.name} <span className="text-stone-400">— {m.specialization}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+              <div>
+                <h2 className="mb-2 text-sm font-medium text-ink-900">Услуги ({data.services.length})</h2>
+                <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white text-sm">
+                  {data.services.map((s) => (
+                    <li key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                      <span>{s.name}</span>
+                      <span className="text-stone-400">{s.duration_min} мин · {s.price} ₽{s.active ? '' : ' · выкл'}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </section>
         )}
       </div>
     </div>
   );
 }
 
-function AddMasterForm({ services, onDone }: { services: { id: number; name: string }[]; onDone: () => void }) {
-  const [name, setName] = useState('');
-  const [spec, setSpec] = useState('');
-  const [picked, setPicked] = useState<number[]>([]);
-  const [busy, setBusy] = useState(false);
-  const toggle = (id: number) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim()) return;
-    setBusy(true);
-    try {
-      await api.adminCreateMaster({ name, specialization: spec, serviceIds: picked });
-      setName(''); setSpec(''); setPicked([]);
-      onDone();
-    } finally { setBusy(false); }
-  };
-  return (
-    <form onSubmit={submit} className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
-      <div className="flex flex-wrap gap-3">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Имя мастера" className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-        <input value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="Специализация" className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" />
-      </div>
-      <div className="flex flex-wrap gap-2">
-        {services.map((s) => (
-          <button type="button" key={s.id} onClick={() => toggle(s.id)}
-            className={`rounded-full px-3 py-1 text-xs font-medium ${picked.includes(s.id) ? 'bg-primary-600 text-white' : 'bg-stone-100 text-stone-600'}`}>
-            {s.name}
-          </button>
-        ))}
-      </div>
-      <button type="submit" disabled={busy} className="rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
-        {busy ? 'Добавляем…' : 'Добавить мастера'}
-      </button>
-    </form>
-  );
-}
-
-function AddServiceForm({ onDone }: { onDone: () => void }) {
-  const [name, setName] = useState('');
-  const [desc, setDesc] = useState('');
-  const [dur, setDur] = useState('60');
-  const [price, setPrice] = useState('');
-  const [busy, setBusy] = useState(false);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name.trim() || !price) return;
-    setBusy(true);
-    try {
-      await api.adminCreateService({ name, description: desc, duration_min: Number(dur), price: Number(price) });
-      setName(''); setDesc(''); setPrice('');
-      onDone();
-    } finally { setBusy(false); }
-  };
-  return (
-    <form onSubmit={submit} className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
-      <div className="flex flex-wrap gap-3">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Название услуги" className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-        <input value={dur} onChange={(e) => setDur(e.target.value)} placeholder="Длит. (мин)" className="w-28 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-        <input value={price} onChange={(e) => setPrice(e.target.value)} placeholder="Цена (₽)" className="w-32 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-      </div>
-      <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Описание" className="w-full rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" />
-      <button type="submit" disabled={busy} className="rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
-        {busy ? 'Добавляем…' : 'Добавить услугу'}
-      </button>
-    </form>
-  );
-}
-
-function AddBookingForm({ users, masters, services, onDone }: {
-  users: { id: number; name: string }[];
-  masters: { id: number; name: string; serviceIds?: number[] }[];
-  services: { id: number; name: string; duration_min: number }[];
-  onDone: () => void;
+function AddScheduleForm({ masters, onSubmit }: {
+  masters: { id: number; name: string }[];
+  onSubmit: (m: number, d: number, s: string, e: string) => void;
 }) {
-  const [clientId, setClientId] = useState<number | ''>('');
-  const [masterId, setMasterId] = useState<number | ''>('');
-  const [serviceId, setServiceId] = useState<number | ''>('');
-  const [date, setDate] = useState('');
-  const [time, setTime] = useState('');
-  const [forceOverlap, setForceOverlap] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    if (!clientId || !masterId || !serviceId || !date || !time) {
-      setErr('Заполните все поля');
-      return;
-    }
-    const svc = services.find((s) => s.id === serviceId);
-    if (!svc) return;
-    const start = `${date}T${time}:00Z`;
-    const end = new Date(new Date(start).getTime() + svc.duration_min * 60000).toISOString();
-    setBusy(true);
-    try {
-      await api.adminCreateBooking({ clientId: Number(clientId), masterId: Number(masterId), serviceId: Number(serviceId), start, end, forceOverlap });
-      setDate(''); setTime(''); setForceOverlap(false);
-      onDone();
-    } catch (e: any) {
-      setErr(e.message || 'Не удалось создать запись');
-    } finally { setBusy(false); }
-  };
-
+  const [mid, setMid] = useState(masters[0]?.id ?? 1);
+  const [dow, setDow] = useState(2);
+  const [ws, setWs] = useState('10:00');
+  const [we, setWe] = useState('18:00');
   return (
-    <form onSubmit={submit} className="space-y-3 rounded-2xl border border-stone-200 bg-white p-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <select value={clientId} onChange={(e) => setClientId(Number(e.target.value))} className="rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required>
-          <option value="">Клиент…</option>
-          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-        </select>
-        <select value={masterId} onChange={(e) => setMasterId(Number(e.target.value))} className="rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required>
-          <option value="">Мастер…</option>
+    <div className="flex flex-wrap items-end gap-2 text-xs">
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">Мастер</span>
+        <select value={mid} onChange={(e) => setMid(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5">
           {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
         </select>
-        <select value={serviceId} onChange={(e) => setServiceId(Number(e.target.value))} className="rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required>
-          <option value="">Услуга…</option>
-          {services.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-        </select>
-        <div className="flex gap-3">
-          <input value={date} onChange={(e) => setDate(e.target.value)} type="date" className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-          <input value={time} onChange={(e) => setTime(e.target.value)} type="time" className="flex-1 rounded-xl border border-stone-200 px-3 py-2 text-sm outline-none focus:border-primary-400" required />
-        </div>
-      </div>
-      <label className="flex items-center gap-2 text-sm text-stone-600">
-        <input type="checkbox" checked={forceOverlap} onChange={(e) => setForceOverlap(e.target.checked)} />
-        Разрешить пересечение (если время занято)
       </label>
-      {err && <p className="text-sm text-red-600">{err}</p>}
-      <button type="submit" disabled={busy} className="rounded-full bg-primary-600 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
-        {busy ? 'Создаём…' : 'Создать запись'}
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">День</span>
+        <select value={dow} onChange={(e) => setDow(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5">
+          {DAY_NAMES.map((n, i) => <option key={i} value={i}>{n}</option>)}
+        </select>
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">С</span>
+        <input type="time" value={ws} onChange={(e) => setWs(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">До</span>
+        <input type="time" value={we} onChange={(e) => setWe(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <button
+        onClick={() => onSubmit(mid, dow, ws, we)}
+        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700"
+      >
+        Сохранить день
       </button>
-    </form>
+    </div>
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function AddBlockForm({ masters, onSubmit }: {
+  masters: { id: number; name: string }[];
+  onSubmit: (p: { master_id: number; start_time: string; end_time: string; reason: string }) => void;
+}) {
+  const [mid, setMid] = useState(masters[0]?.id ?? 1);
+  const [date, setDate] = useState('');
+  const [from, setFrom] = useState('13:00');
+  const [to, setTo] = useState('14:00');
+  const [reason, setReason] = useState('');
   return (
-    <section>
-      <h2 className="mb-3 font-display text-xl font-semibold text-ink-900">{title}</h2>
-      {children}
-    </section>
+    <div className="flex flex-wrap items-end gap-2 text-xs">
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">Мастер</span>
+        <select value={mid} onChange={(e) => setMid(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5">
+          {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">Дата</span>
+        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">С</span>
+        <input type="time" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-stone-400">До</span>
+        <input type="time" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex min-w-40 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Причина</span>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="обед / отпуск" className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <button
+        onClick={() => date && onSubmit({
+          master_id: mid,
+          start_time: `${date}T${from}:00`,
+          end_time: `${date}T${to}:00`,
+          reason,
+        })}
+        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700"
+      >
+        Добавить
+      </button>
+    </div>
   );
 }

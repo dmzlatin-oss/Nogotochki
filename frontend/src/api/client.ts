@@ -158,11 +158,46 @@ export const api = {
   async cancelBooking(id: number) {
     return request(`/bookings/${id}`, { method: 'DELETE' });
   },
+  // Перенос записи (админ может менять время любой записи)
+  async rescheduleBooking(id: number, start: string, end: string) {
+    return request(`/bookings/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ start, end }),
+    });
+  },
 
   // --- Admin ---
   async adminBookings() {
     const r = await request<{ bookings: any[] }>('/admin/bookings');
     return r.bookings;
+  },
+  async adminSchedule() {
+    const r = await request<{ schedule: any[] }>('/admin/schedule');
+    return r.schedule;
+  },
+  async adminSetSchedule(masterId: number, dayOfWeek: number, workStart: string, workEnd: string) {
+    return request('/admin/schedule', {
+      method: 'POST',
+      body: JSON.stringify({
+        master_id: masterId,
+        day_of_week: dayOfWeek,
+        work_start: workStart,
+        work_end: workEnd,
+      }),
+    });
+  },
+  async adminDeleteSchedule(id: number) {
+    return request(`/admin/schedule/${id}`, { method: 'DELETE' });
+  },
+  async blocks() {
+    const r = await request<{ blocks: any[] }>('/blocks');
+    return r.blocks;
+  },
+  async createBlock(input: { master_id: number; start_time: string; end_time: string; reason: string }) {
+    return request('/admin/blocks', { method: 'POST', body: JSON.stringify(input) });
+  },
+  async deleteBlock(id: number) {
+    return request(`/admin/blocks/${id}`, { method: 'DELETE' });
   },
   async adminUsers() {
     const r = await request<{ users: any[] }>('/admin/users');

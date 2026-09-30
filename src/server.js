@@ -318,7 +318,9 @@ app.get('/api/admin/services', authenticateToken, requireRole('admin'), (req, re
   res.json({ services: rows });
 });
 app.get('/api/admin/schedule', authenticateToken, requireRole('admin'), (req, res) => {
-  const rows = all(`SELECT s.*, m.name AS master_name, s.day_of_week, s.work_start, s.work_end, s.active
+  // В таблице schedule нет колонки active — её упоминание роняло запрос с
+  // "no such column: s.active". Убрали из SELECT.
+  const rows = all(`SELECT s.*, m.name AS master_name
                     FROM schedule s
                     LEFT JOIN masters m ON m.id = s.master_id
                     ORDER BY s.master_id, s.day_of_week`);
