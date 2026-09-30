@@ -30,6 +30,7 @@ export default function AdminDashboard() {
   const [data, setData] = useState<AdminData | null>(null);
   const [tab, setTab] = useState<Tab>('bookings');
   const [busy, setBusy] = useState(false);
+  const [rescheduling, setRescheduling] = useState<BookingView | null>(null);
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null);
 
   const load = () => {
@@ -66,6 +67,20 @@ export default function AdminDashboard() {
   const cancelBooking = (b: BookingView) => {
     if (!confirm(`Отменить запись #${b.id}?\n${b.clientName} · ${b.serviceName}\n${formatMSK(b.start)}`)) return;
     run(() => api.cancelBooking(b.id), `Запись #${b.id} отменена`);
+  };
+
+  /**
+   * Перенос записи на другое время. Слот выбирается из реальной доступности
+   * мастера, поэтому занятые и не помещающиеся в смену слоты сразу видно.
+   */
+  const moveBooking = async (id: number, date: string, time: string) => {
+    const booking = data?.bookings.find((x) => x.id === id);
+    const service = data?.services.find((s) => s.id === booking?.serviceId);
+    const dur = service?.duration_min ?? 60;
+    const [h, m] = time.split(':').map(Number);
+    const total = h * 60 + m + dur;
+    const endSalon = `${date}T${String(Math.floor(total / 60) % 24).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}:00`;
+    return api.rescheduleBooking(id, `${date}T${time}:00`, endSalon);
   };
 
   const deleteSchedule = (s: ScheduleRow) => {
@@ -159,16 +174,37 @@ export default function AdminDashboard() {
                       {b.status === 'active' ? 'активна' : b.status === 'cancelled' ? 'отменена' : b.status}
                     </span>
                     {b.status === 'active' && (
-                      <button
-                        onClick={() => cancelBooking(b)}
-                        className="rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50"
-                      >
-                        Отменить
-                      </button>
+                      <>
+                        <button
+                          onClick={() => setRescheduling(b)}
+                          className="rounded-lg border border-stone-300 px-3 py-1.5 text-stone-700 hover:bg-stone-50"
+                        >
+                          Перенести
+                        </button>
+                        <button
+                          onClick={() => cancelBooking(b)}
+                          className="rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50"
+                        >
+                          Отменить
+                        </button>
+                      </>
                     )}
                   </span>
                 </li>
               ))}
+              {rescheduling && (
+                <li className="bg-primary-50/50 px-4 py-4">
+                  <RescheduleForm
+                    booking={rescheduling}
+                    onCancel={() => setRescheduling(null)}
+                    onSubmit={(date, time) => {
+                      const id = rescheduling.id;
+                      setRescheduling(null);
+                      run(() => moveBooking(id, date, time), `Запись #${id} перенесена на ${date} ${time} МСК`);
+                    }}
+                  />
+                </li>
+              )}
               {data.bookings.length === 0 && <li className="px-4 py-3 text-sm text-stone-500">нет записей</li>}
             </ul>
           </section>
@@ -541,4 +577,110 @@ function AddBlockForm({ masters, onSubmit }: {
       </button>
     </div>
   );
+}
+
+/**
+ * Форма переноса записи. Показывает сетку слотов мастера на выбранную дату
+ * с реальными статусами: занято (запись/исключение) или не помещается
+ * до конца смены. Так администратор видит занятость до переноса, а не после.
+ */
+function RescheduleForm({ booking, onSubmit, onCancel }: {
+  booking: BookingView;
+  onSubmit: (date: string, time: string) => void;
+  onCancel: () => void;
+}) {
+  const [date, setDate] = useState(() => dbDate(formatMSK(booking.start)));
+  const [slots, setSlots] = useState<{ time: string; status: string }[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [picked, setPicked] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!date) return;
+    setLoading(true); setSlots(null); setPicked(null);
+    api.getAvailability(String(booking.masterId), date, String(booking.serviceId))
+      .then((r) => setSlots(r.slots))
+      .catch(() => setSlots([]))
+      .finally(() => setLoading(false));
+  }, [date, booking.masterId, booking.serviceId]);
+
+  return (
+    <div className="space-y-3">
+      <p className="text-sm text-ink-900">
+        Перенос записи <b>#{booking.id}</b> · {booking.clientName} · {booking.serviceName}
+        <span className="ml-2 text-stone-500">
+          сейчас {formatMSK(booking.start).replace(' МСК', '')} МСК
+        </span>
+      </p>
+      <div className="flex flex-wrap items-end gap-2 text-xs">
+        <label className="flex flex-col gap-1">
+          <span className="text-stone-400">Новая дата</span>
+          <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+        </label>
+        <span className="pb-2 text-stone-400">время московское (МСК)</span>
+      </div>
+
+      {loading && <p className="text-xs text-stone-400">Загружаю слоты…</p>}
+      {!loading && slots && slots.length === 0 && (
+        <p className="text-xs text-amber-700">
+          В этот день мастер не работает. Выберите другую дату или запись можно только отменить.
+        </p>
+      )}
+      {!loading && slots && slots.length > 0 && (
+        <>
+          <div className="grid grid-cols-6 gap-1.5 sm:grid-cols-10">
+            {slots.map((s) => {
+              const free = s.status === 'available';
+              return (
+                <button
+                  key={s.time}
+                  type="button"
+                  disabled={!free}
+                  onClick={() => setPicked(s.time)}
+                  title={s.status === 'busy' ? 'Занято' : s.status === 'tooshort' ? 'Не помещается до конца смены' : undefined}
+                  className={`rounded-lg border px-2 py-1.5 text-xs ${
+                    picked === s.time
+                      ? 'border-primary-600 bg-primary-600 text-white'
+                      : free
+                      ? 'border-stone-200 bg-white text-stone-700 hover:border-primary-300'
+                      : s.status === 'busy'
+                      ? 'cursor-not-allowed border-stone-100 bg-stone-50 text-stone-300 line-through'
+                      : 'cursor-not-allowed border-amber-100 bg-amber-50 text-amber-400'
+                  }`}
+                >
+                  {s.time}
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex flex-wrap items-center gap-3 text-[11px] text-stone-400">
+            <span>свободно</span>
+            <span className="line-through">занято</span>
+            <span className="text-amber-500">не помещается</span>
+          </div>
+        </>
+      )}
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => picked && onSubmit(date, picked)}
+          disabled={!picked}
+          className="rounded-lg bg-primary-600 px-3 py-1.5 text-xs text-white hover:bg-primary-700 disabled:opacity-40"
+        >
+          {picked ? `Перенести на ${picked} МСК` : 'Выберите время'}
+        </button>
+        <button
+          onClick={onCancel}
+          className="rounded-lg border border-stone-200 px-3 py-1.5 text-xs text-stone-600 hover:bg-stone-50"
+        >
+          Закрыть
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** 'ДД.ММ.ГГГГ' → 'ГГГГ-ММ-ДД' для input[type=date] */
+function dbDate(mskLabel: string): string {
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(mskLabel);
+  return m ? `${m[3]}-${m[2]}-${m[1]}` : '';
 }
