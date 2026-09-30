@@ -4,7 +4,9 @@ import { fileURLToPath, URL } from 'node:url';
 
 // https://vitejs.dev/config/
 export default defineConfig({
-  base: '/',
+  // nginx отдаёт фронт по префиксу /nogotochki/ (alias /var/www/nogotochki-frontend/).
+  // С base:'/' сборка ссылалась на /assets/... → 404, страница оставалась пустой.
+  base: '/nogotochki/',
   plugins: [react()],
   resolve: {
     alias: {
