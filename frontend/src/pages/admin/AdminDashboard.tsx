@@ -8,7 +8,6 @@ import { formatMSK } from '@/data/studio';
 
 interface BookingView { id: number; masterId: number; clientId: number; serviceId: number; masterName?: string; clientName?: string; serviceName?: string; start: string; end: string; status: string; }
 interface ScheduleRow { id: number; master_id: number; master_name?: string; day_of_week: number; work_start: string; work_end: string; }
-interface BlockView { id: number; master_id: number; master_name?: string; start_time: string; end_time: string; reason: string; }
 interface AdminData {
   bookings: BookingView[];
   users: { id: number; name: string; email: string; role: string }[];
@@ -16,13 +15,12 @@ interface AdminData {
   services: { id: number; name: string; duration_min: number; price: number; active: number }[];
   links: { master_id: number; service_id: number }[];
   schedule: ScheduleRow[];
-  blocks: BlockView[];
 }
 
 const DAY_NAMES = ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'];
 const DAY_SHORT = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
 
-type Tab = 'bookings' | 'schedule' | 'blocks' | 'catalog';
+type Tab = 'bookings' | 'schedule' | 'catalog';
 
 export default function AdminDashboard() {
   const { user, logout } = useAuth();
@@ -36,10 +34,10 @@ export default function AdminDashboard() {
     Promise.all([
       api.adminBookings(), api.adminUsers(), api.adminMasters(),
       api.adminServices(), api.adminMasterServices(),
-      api.adminSchedule(), api.blocks(),
+      api.adminSchedule(),
     ])
-      .then(([bookings, users, masters, services, links, schedule, blocks]) =>
-        setData({ bookings, users, masters, services, links: links as any, schedule, blocks })
+      .then(([bookings, users, masters, services, links, schedule]) =>
+        setData({ bookings, users, masters, services, links: links as any, schedule })
       )
       .catch(() => setData(null));
   };
@@ -66,11 +64,6 @@ export default function AdminDashboard() {
   const cancelBooking = (b: BookingView) => {
     if (!confirm(`Отменить запись #${b.id}?\n${b.clientName} · ${b.serviceName}\n${formatMSK(b.start)}`)) return;
     run(() => api.cancelBooking(b.id), `Запись #${b.id} отменена`);
-  };
-
-  const deleteBlock = (bl: BlockView) => {
-    if (!confirm(`Удалить блокировку?\n${bl.master_name} · ${formatMSK(bl.start_time)}–${formatMSK(bl.end_time)}\n${bl.reason || ''}`)) return;
-    run(() => api.deleteBlock(bl.id), 'Блокировка удалена');
   };
 
   const deleteSchedule = (s: ScheduleRow) => {
@@ -115,7 +108,6 @@ export default function AdminDashboard() {
           {([
             ['bookings', `Записи${data ? ` (${data.bookings.filter(b => b.status === 'active').length})` : ''}`],
             ['schedule', 'Расписание'],
-            ['blocks', `Блокировки${data ? ` (${data.blocks.length})` : ''}`],
             ['catalog', 'Услуги и мастера'],
           ] as [Tab, string][]).map(([key, label]) => (
             <button
@@ -226,43 +218,6 @@ export default function AdminDashboard() {
           </section>
         )}
 
-        {/* БЛОКИРОВКИ */}
-        {data && tab === 'blocks' && (
-          <section className="space-y-3">
-            <p className="text-sm text-stone-500">
-              Блокировки — занятое время, которое создаёт администратор: обед, отпуск, личный кабинет. Клиент такие слоты видит как «занято».
-            </p>
-            <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white">
-              {data.blocks.map((bl) => (
-                <li key={bl.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3 text-sm">
-                  <span>
-                    {bl.master_name || `мастер #${bl.master_id}`}
-                    <br />
-                    <span className="text-stone-500">
-                      {formatMSK(bl.start_time)} – {formatMSK(bl.end_time)}
-                      {bl.reason ? ` · ${bl.reason}` : ''}
-                    </span>
-                  </span>
-                  <button
-                    onClick={() => deleteBlock(bl)}
-                    className="rounded-lg border border-rose-200 px-3 py-1.5 text-rose-700 hover:bg-rose-50"
-                  >
-                    Удалить
-                  </button>
-                </li>
-              ))}
-              {data.blocks.length === 0 && <li className="px-4 py-3 text-sm text-stone-500">блокировок нет</li>}
-            </ul>
-            <div className="rounded-2xl border border-stone-200 bg-white p-4">
-              <p className="mb-3 text-sm font-medium text-ink-900">Новая блокировка</p>
-              <AddBlockForm
-                masters={data.masters}
-                onSubmit={(payload) => run(() => api.createBlock(payload), 'Блокировка создана')}
-              />
-            </div>
-          </section>
-        )}
-
         {/* КАТАЛОГ */}
         {data && tab === 'catalog' && (
           <section className="space-y-6">
@@ -300,22 +255,55 @@ export default function AdminDashboard() {
                 <h2 className="mb-2 text-sm font-medium text-ink-900">Мастера ({data.masters.length})</h2>
                 <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white text-sm">
                   {data.masters.map((m) => (
-                    <li key={m.id} className="px-4 py-2.5">
-                      {m.name} <span className="text-stone-400">— {m.specialization}</span>
+                    <li key={m.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
+                      <span>{m.name} <span className="text-stone-400">— {m.specialization}</span></span>
+                      <button
+                        onClick={() => {
+                          if (!confirm(`Включить/выключить ${m.name}?\nВыключенный мастер не будет доступен для записи.`)) return;
+                          run(() => api.setMasterActive(m.id, !(m as any).active), `${m.name}: статус изменён`);
+                        }}
+                        className={`rounded-full px-2.5 py-1 text-xs ${
+                          (m as any).active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-500'
+                        }`}
+                      >
+                        {(m as any).active ? 'активен' : 'выключен'}
+                      </button>
                     </li>
                   ))}
                 </ul>
+                <div className="mt-3 rounded-2xl border border-stone-200 bg-white p-4">
+                  <p className="mb-3 text-sm font-medium text-ink-900">Новый мастер</p>
+                  <AddMasterForm
+                    onSubmit={(p) => run(() => api.createMaster(p), `Мастер ${p.name} создан`)}
+                  />
+                </div>
               </div>
               <div>
                 <h2 className="mb-2 text-sm font-medium text-ink-900">Услуги ({data.services.length})</h2>
                 <ul className="divide-y divide-stone-100 rounded-2xl border border-stone-200 bg-white text-sm">
                   {data.services.map((s) => (
-                    <li key={s.id} className="flex items-center justify-between px-4 py-2.5">
+                    <li key={s.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                       <span>{s.name}</span>
-                      <span className="text-stone-400">{s.duration_min} мин · {s.price} ₽{s.active ? '' : ' · выкл'}</span>
+                      <span className="flex items-center gap-2">
+                        <span className="text-stone-400">{s.duration_min} мин · {s.price} ₽</span>
+                        <button
+                          onClick={() => run(() => api.setServiceActive(s.id, !s.active), `${s.name}: статус изменён`)}
+                          className={`rounded-full px-2.5 py-1 text-xs ${
+                            s.active ? 'bg-emerald-50 text-emerald-700' : 'bg-stone-100 text-stone-500'
+                          }`}
+                        >
+                          {s.active ? 'вкл' : 'выкл'}
+                        </button>
+                      </span>
                     </li>
                   ))}
                 </ul>
+                <div className="mt-3 rounded-2xl border border-stone-200 bg-white p-4">
+                  <p className="mb-3 text-sm font-medium text-ink-900">Новая услуга</p>
+                  <AddServiceForm
+                    onSubmit={(p) => run(() => api.createService(p), `Услуга ${p.name} создана`)}
+                  />
+                </div>
               </div>
             </div>
           </section>
@@ -365,49 +353,81 @@ function AddScheduleForm({ masters, onSubmit }: {
   );
 }
 
-function AddBlockForm({ masters, onSubmit }: {
-  masters: { id: number; name: string }[];
-  onSubmit: (p: { master_id: number; start_time: string; end_time: string; reason: string }) => void;
+function AddMasterForm({ onSubmit }: {
+  onSubmit: (p: { name: string; specialization: string; work_start: string; work_end: string }) => void;
 }) {
-  const [mid, setMid] = useState(masters[0]?.id ?? 1);
-  const [date, setDate] = useState('');
-  const [from, setFrom] = useState('13:00');
-  const [to, setTo] = useState('14:00');
-  const [reason, setReason] = useState('');
+  const [name, setName] = useState('');
+  const [spec, setSpec] = useState('');
+  const [ws, setWs] = useState('10:00');
+  const [we, setWe] = useState('19:00');
   return (
     <div className="flex flex-wrap items-end gap-2 text-xs">
-      <label className="flex flex-col gap-1">
-        <span className="text-stone-400">Мастер</span>
-        <select value={mid} onChange={(e) => setMid(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5">
-          {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-        </select>
+      <label className="flex min-w-32 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Имя и фамилия</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Иванова Мария" className="rounded-lg border border-stone-200 px-2 py-1.5" />
       </label>
-      <label className="flex flex-col gap-1">
-        <span className="text-stone-400">Дата</span>
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      <label className="flex min-w-32 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Специализация</span>
+        <input value={spec} onChange={(e) => setSpec(e.target.value)} placeholder="Маникюр, педикюр" className="rounded-lg border border-stone-200 px-2 py-1.5" />
       </label>
       <label className="flex flex-col gap-1">
         <span className="text-stone-400">С</span>
-        <input type="time" value={from} onChange={(e) => setFrom(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+        <input type="time" value={ws} onChange={(e) => setWs(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
       </label>
       <label className="flex flex-col gap-1">
         <span className="text-stone-400">До</span>
-        <input type="time" value={to} onChange={(e) => setTo(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
-      </label>
-      <label className="flex min-w-40 flex-1 flex-col gap-1">
-        <span className="text-stone-400">Причина</span>
-        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="обед / отпуск" className="rounded-lg border border-stone-200 px-2 py-1.5" />
+        <input type="time" value={we} onChange={(e) => setWe(e.target.value)} className="rounded-lg border border-stone-200 px-2 py-1.5" />
       </label>
       <button
-        onClick={() => date && onSubmit({
-          master_id: mid,
-          start_time: `${date}T${from}:00`,
-          end_time: `${date}T${to}:00`,
-          reason,
-        })}
-        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700"
+        onClick={() => {
+          if (!confirm(`Создать мастера «${name.trim()}»?\nЧасы работы по умолчанию ${ws}–${we} заполнятся во все дни недели.\nДни можно убрать во вкладке «Расписание».`)) return;
+          onSubmit({ name: name.trim(), specialization: spec.trim(), work_start: ws, work_end: we });
+          setName(''); setSpec('');
+        }}
+        disabled={!name.trim()}
+        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 disabled:opacity-40"
       >
-        Добавить
+        Создать мастера
+      </button>
+    </div>
+  );
+}
+
+function AddServiceForm({ onSubmit }: {
+  onSubmit: (p: { name: string; description: string; duration_min: number; price: number }) => void;
+}) {
+  const [name, setName] = useState('');
+  const [desc, setDesc] = useState('');
+  const [dur, setDur] = useState(60);
+  const [price, setPrice] = useState(1800);
+  return (
+    <div className="flex flex-wrap items-end gap-2 text-xs">
+      <label className="flex min-w-32 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Название</span>
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Массаж лица" className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex min-w-32 flex-1 flex-col gap-1">
+        <span className="text-stone-400">Описание</span>
+        <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Длительность: 1 час" className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex w-20 flex-col gap-1">
+        <span className="text-stone-400">Минут</span>
+        <input type="number" min={5} step={5} value={dur} onChange={(e) => setDur(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <label className="flex w-24 flex-col gap-1">
+        <span className="text-stone-400">Цена ₽</span>
+        <input type="number" min={0} step={100} value={price} onChange={(e) => setPrice(Number(e.target.value))} className="rounded-lg border border-stone-200 px-2 py-1.5" />
+      </label>
+      <button
+        onClick={() => {
+          if (!confirm(`Создать услугу «${name.trim()}»?\n${dur} мин · ${price} ₽\nПосле создания её нужно связать с мастерами в блоке «Связи мастеров и услуг» выше.`)) return;
+          onSubmit({ name: name.trim(), description: desc.trim(), duration_min: dur, price });
+          setName(''); setDesc('');
+        }}
+        disabled={!name.trim()}
+        className="rounded-lg bg-primary-600 px-3 py-2 text-white hover:bg-primary-700 disabled:opacity-40"
+      >
+        Создать услугу
       </button>
     </div>
   );

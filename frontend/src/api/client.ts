@@ -199,6 +199,21 @@ export const api = {
   async deleteBlock(id: number) {
     return request(`/admin/blocks/${id}`, { method: 'DELETE' });
   },
+  async createMaster(p: {
+    name: string; specialization?: string; photo_url?: string;
+    work_start?: string; work_end?: string; serviceIds?: number[];
+  }) {
+    return request('/admin/masters', { method: 'POST', body: JSON.stringify(p) });
+  },
+  async setMasterActive(id: number, active: boolean) {
+    return request(`/admin/masters/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) });
+  },
+  async createService(p: { name: string; description?: string; duration_min: number; price: number }) {
+    return request('/admin/services', { method: 'POST', body: JSON.stringify(p) });
+  },
+  async setServiceActive(id: number, active: boolean) {
+    return request(`/admin/services/${id}`, { method: 'PATCH', body: JSON.stringify({ active }) });
+  },
   async adminUsers() {
     const r = await request<{ users: any[] }>('/admin/users');
     return r.users;

@@ -45,13 +45,8 @@ function getFreeSlots(masterId, dateStr, durationMin) {
   for (const b of bookings) {
     busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
   }
-  const blocks = all(
-    `SELECT start_time, end_time FROM blocks WHERE master_id = ? AND substr(start_time,1,10) = ?`,
-    [masterId, dateStr]
-  );
-  for (const b of blocks) {
-    busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
-  }
+  // Блокировки из расчёта занятости убраны (30.09.2026): занятость задают
+  // только записи клиентов и график работы мастера.
   busy.sort((a, b) => a.start - b.start);
 
   // Вычитаем занятые из рабочих интервалов
@@ -93,8 +88,7 @@ function getFreeIntervals(masterId, dateStr) {
   const busy = [];
   const bookings = all(`SELECT start_time, end_time FROM bookings WHERE master_id = ? AND status='active' AND substr(start_time,1,10)=? AND force_overlap=0`, [masterId, dateStr]);
   for (const b of bookings) busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
-  const blocks = all(`SELECT start_time, end_time FROM blocks WHERE master_id = ? AND substr(start_time,1,10)=?`, [masterId, dateStr]);
-  for (const b of blocks) busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
+  // Блокировки не учитываются — только записи (см. getFreeSlots).
   busy.sort((a, b) => a.start - b.start);
   let free = intervals;
   for (const b of busy) {
@@ -133,11 +127,7 @@ function getSlotStatuses(masterId, dateStr, durationMin) {
     [masterId, dateStr]
   );
   for (const b of bookings) busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
-  const blocks = all(
-    `SELECT start_time, end_time FROM blocks WHERE master_id = ? AND substr(start_time,1,10) = ?`,
-    [masterId, dateStr]
-  );
-  for (const b of blocks) busy.push({ start: parseNaive(naiveTime(b.start_time)).getTime(), end: parseNaive(naiveTime(b.end_time)).getTime() });
+  // Блокировки не учитываются — только записи (см. getFreeSlots).
   busy.sort((a, b) => a.start - b.start);
 
   const durMs = durationMin * 60000;
